@@ -210,23 +210,78 @@ class AnsibleCloudStackVolumeSnapshot(AnsibleCloudStack):
     def __init__(self, module):
         super(AnsibleCloudStackVolumeSnapshot, self).__init__(module)
 
+    def get_snapshot(self, key=None):
+        name = self.module.params.get('name')
+        if not name:
+            return None
+
+        args = {
+            'name': name,
+            'account': self.get_account(key='name'),
+            'domainid': self.get_domain(key='id'),
+            'projectid': self.get_project(key='id'),
+        }
+        snapshots = self.query_api('listSnapshots', **args)
+        if snapshots:
+            return self._get_by_key(key, snapshots['snapshot'][0])
+        return None
+
+    def get_volume(self, key=None):
+        args = {
+            'account': self.get_account(key='name'),
+            'domainid': self.get_domain(key='id'),
+            'projectid': self.get_project(key='id'),
+            'zoneid': self.get_zone(key='id'),
+        }
+        volumes = self.query_api('listVolumes', **args)
+        if volumes:
+            return self._get_by_key(key, snapshots['snapshot'][0])
+        return None
+
     def create_snapshot(self):
         args = {
-            'volumeid': self.get_volumeid(key='volume'),
-            'name': self.get(key='name')
-            'policyid': self.get_policyid(key='policy')
-            'locationtype': self.get(key='locationtype')
-            'quiescevm': self.get(key='quiescevm')
-            'asyncbackup': self.get(key='asyncbackup')
+            'volumeid': self.get_volume('id'),
+            'policyid': self.get_snapshot_policy('id'),
+            'name': self.module.params.get('name'),
+            'locationtype': self.module.params.get('locationtype'),
+            'quiescevm': self.module.params.get('quiescevm'),
+            'asyncbackup': self.module.params.get('asyncbackup'),
+            'account': self.get_account('name'),
+            'domainid': self.get_domain('id'),
         }
 
+        self.result['changed'] = True
         if not self.module.check_mode:
-            res = self.query_api('createSnapshot', **args)
-
+            result = self.query_api('createSnapshot', **args)
             poll_async = self.module.params.get('poll_async')
-            if res and poll_async:
-                res = self.poll_job(res, 'snapshot')
+            if result and poll_async:
+                result = self.poll_job(result, 'snapshot')
 
+    def create_from_vmsnapshot(self):
+        args = {
+            'volumeid': self.get_volume('id'),
+            'name': self.module.params.get('name'),
+            'vmsnapshotid': self.get_snapshot('id'),
+        }
+
+        self.result['changed'] = True
+        if not self.module.check_mode:
+            result = self.query_api('createSnapshotFromVMSnapshot', **args)
+            poll_async = self.module.params.get('poll_async')
+            if result and poll_async:
+                result = self.poll_job(result, 'snapshot')
+
+    def delete_snapshot(self):
+        args = {
+            'id': self.get_snapshot('id'),
+        }
+
+        self.result['changed'] = True
+        if not self.module.check_mode:
+            result = self.query_api('deleteSnapshot', **args)
+            poll_async = self.module.params.get('poll_async')
+            if result and poll_async:
+                result = self.poll_job(result, 'snapshot')
 
 def main():
     argument_spec = cs_argument_spec()
@@ -234,10 +289,8 @@ def main():
         name=dict(),
         volume=dict(),
         vmsnapshot=dict(),
-        state=dict(),
-            choices: [ 'present', 'absent', 'reverted' ]
-        locationtype=dict(),
-            choices: [ 'primary', 'secondary' ]
+        state=dict(choices=['present', 'absent', 'revert'], default='present'),
+        locationtype=dict(choices=['primary', 'secondary'], default='primary'),
         policy=dict(),
         asyncbackup=dict(type='bool'),
         quiescevm=dict(type='bool'),
@@ -253,17 +306,17 @@ def main():
     )
 
     acs_snapshot = AnsibleCloudStackVolumeSnapshot(module)
-    state = self.get('state')
-    if state == 'present':
-        if self.get('vmsnapshot') is defined:
-            acs_snapshot.create_vmsnapshot()
-        else:
-            acs_snapshot.create_snapshot()
-    elif state == 'absent':
-        acs_snapshot.delete_snapshot()
+    state = module.params.get('state')
+    if state == 'absent':
+        snapshot = acs_snapshot.delete_snapshot()
     elif state == 'reverted':
-        acs_snapshot.revert_snapshot()
-    result = acs_snapshot.get_result({'password': password})
+        snapshot = acs_snapshot.revert_to_snapshot()
+    else:
+        if module.params.get('vmsnapshot') is not None:
+            snapshot = acs_snapshot.create_from_vmsnapshot()
+        else:
+            snapshot = acs_snapshot.create_snapshot()
+    result = acs_snapshot.get_result(snapshot)
 
     module.exit_json(**result)
 
